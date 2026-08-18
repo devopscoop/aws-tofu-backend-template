@@ -1,0 +1,12 @@
+# Local state exists only between `tofu apply` (phase 1) and
+# `tofu init -migrate-state` (phase 2). It must never be committed.
+*.tfstate
+*.tfstate.*
+*.tfstate.backup
+
+.terraform/
+*.tfvars
+!example.tfvars
+
+crash.log
+crash.*.log
