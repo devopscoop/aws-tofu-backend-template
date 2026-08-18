@@ -6,7 +6,6 @@
 
 .terraform/
 *.tfvars
-!example.tfvars
 
 crash.log
 crash.*.log

@@ -1,9 +1,14 @@
 # OpenTofu remote-state bucket template
 
 Creates one S3 bucket to hold the OpenTofu remote state for one git
-repository. Copy this directory into a repo (conventionally as
-`bootstrap/`), run the two-phase procedure below, and the repo has a
-dedicated, hardened state bucket that is itself managed as code.
+repository. Vendor it into a repo as a subtree at `aws-tofu-backend/`:
+
+```sh
+git subtree add --prefix=aws-tofu-backend <template-repo-url> main
+```
+
+Then run the two-phase procedure below, and the repo has a dedicated,
+hardened state bucket that is itself managed as code.
 
 Requires OpenTofu >= 1.10 (uses S3-native locking via `use_lockfile`,
 so no DynamoDB table is needed).
@@ -70,6 +75,25 @@ distinct `key` per root module (the bootstrap state uses
 `bootstrap/terraform.tfstate`; the main config uses `terraform.tfstate`
 by default). One bucket per repo, many keys, is fine — the rule this
 template enforces is no bucket shared *across* repos.
+
+## Pulling upstream updates
+
+```sh
+git subtree pull --prefix=aws-tofu-backend <template-repo-url> main
+```
+
+Do not use `--squash`: upstream commits should land individually in the
+consuming repo's history so every change is visible, not collapsed into
+one opaque sync commit.
+
+Customize by editing these files in place — that includes the required
+edits (uncommenting `backend.tf`) and any repo-specific hardening (extra
+policy statements, longer retention, tags). Local edits and upstream
+changes three-way merge on pull; a conflict means upstream changed
+something you customized, which is exactly when you should be looking at
+it. Resolve by reading the upstream change and re-applying your
+customization on top. A clean merge is still worth a skim: `git log` the
+new commits after pulling.
 
 ## Access notes
 
