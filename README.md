@@ -27,11 +27,15 @@ What the bucket gets:
   org-level log bucket and every read/write of state is recorded. Create
   that log bucket (or account-wide CloudTrail S3 data events) once,
   outside this per-repo template.
-- **`prevent_destroy`** on both the bucket and the KMS key — `tofu
-  destroy` refuses to delete the state or the key that decrypts it
+- **`prevent_destroy`** on the buckets and the KMS keys — `tofu
+  destroy` refuses to delete the state or the keys that decrypt it
   unless you deliberately remove the guards.
 - **Lifecycle rule** expiring noncurrent state versions after 90 days
   (configurable) so versioning doesn't accumulate cost forever.
+- **Cross-region replica** — every write is replicated to a second
+  bucket in `replica_region` (default `us-west-2`), so the state
+  survives losing the primary region. See
+  [Cross-region replica](#cross-region-replica).
 
 ## Bootstrap procedure
 
@@ -44,7 +48,10 @@ tofu apply -var repo_name=<repo-name>          # add -var region=... if not us-e
 
 The `backend.tf` block is commented out at this point, so state lands in
 a local `terraform.tfstate`. The bucket is named
-`<repo_name>-tfstate-<account_id>` unless you override `bucket_name`.
+`<repo_name>-tfstate-<account_id>` unless you override `bucket_name`,
+and its replica is `<bucket name>-replica` in `replica_region` unless you
+override `replica_bucket_name`. If `region` is `us-west-2`, set
+`replica_region` to some other region.
 
 ### Phase 2 — migrate the state into the bucket it just created
 
@@ -95,6 +102,49 @@ it. Resolve by reading the upstream change and re-applying your
 customization on top. A clean merge is still worth a skim: `git log` the
 new commits after pulling.
 
+To call this directory as a module from a larger configuration instead
+of applying it on its own, delete the two `provider` blocks in
+`versions.tf` and pass both providers in:
+
+```hcl
+module "state" {
+  source    = "./aws-tofu-backend"
+  repo_name = "<repo-name>"
+
+  providers = {
+    aws         = aws
+    aws.replica = aws.replica # must be a different region from aws
+  }
+}
+```
+
+## Cross-region replica
+
+The replica is hardened like the source bucket: versioning, its own
+customer-managed KMS key in the replica region, TLS-only, public access
+blocked, `prevent_destroy`, and the same noncurrent-version lifecycle
+rule. Delete markers are replicated too, so the replica tracks the
+source, including lock files being removed on unlock. The
+added cost is a second KMS key (~$1/month) plus storage and transfer
+for a few KB per state write.
+
+- **Enabling on an existing bucket:** S3 replication only covers objects
+  written after it's turned on. The current state reaches the replica on
+  its next write. To backfill right away, run an S3 Batch Replication
+  job on the bucket.
+- **Recovering from a regional outage:** point the backend block at
+  `tofu output replica_bucket`, `replica_bucket_region`, and
+  `replica_kms_key_arn`, then run `tofu init -reconfigure`. Nothing
+  replicates back, so copy the state to the primary bucket once it's
+  reachable again before switching back.
+- **Compliance scanners** that require every bucket to be replicated
+  (Vanta's "S3 backup configured for redundancy across regions" test,
+  for example) flag the replica too. Pass the scanner's suppression tag
+  through `replica_tags`, e.g.
+  `replica_tags = { VantaNoAlert = "Cross-region replica of <bucket>" }`.
+  Vanta's tag takes the bucket out of scope for *every* Vanta test, not
+  just that one.
+
 ## Access notes
 
 - Any principal that runs `tofu plan`/`apply` against this backend needs
@@ -104,6 +154,11 @@ new commits after pulling.
   `encrypt = true` alone, the backend requests SSE-S3 per object, which
   overrides the bucket's default KMS encryption. Setting `kms_key_id` is
   what makes the state objects KMS-encrypted.
+- The principal that applies *this* template also creates the
+  replication role and hands it to S3, so it needs `iam:CreateRole`,
+  `iam:PutRolePolicy`, and `iam:PassRole` on
+  `<repo_name>-tfstate-replication`. Principals that only run plan/apply
+  against the backend never touch the replica.
 
 ## Why OpenTofu code instead of `aws s3api` commands?
 
@@ -138,7 +193,7 @@ sounds alarming but has small, well-mitigated failure modes:
   attempt it.
 - **If the state object is lost, the config no longer knows about the
   bucket.** Versioning makes loss unlikely, and recovery is trivial
-  anyway: this config is a handful of resources on one bucket, and
+  anyway: this config is about twenty resources on two buckets, and
   `tofu import` rebuilds the state in minutes. This is the key point —
   the blast radius of the circular dependency is one small, easily
   re-imported config, which is a good trade for never having stray local
