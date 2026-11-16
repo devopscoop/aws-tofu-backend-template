@@ -26,3 +26,18 @@ output "backend_config" {
     }
   EOT
 }
+
+output "replica_bucket" {
+  description = "Name of the cross-region replica of the state bucket. Point the backend here (with replica_bucket_region and replica_kms_key_arn) if the primary region is lost."
+  value       = aws_s3_bucket.replica.id
+}
+
+output "replica_bucket_region" {
+  description = "Region of the replica bucket."
+  value       = aws_s3_bucket.replica.region
+}
+
+output "replica_kms_key_arn" {
+  description = "ARN of the customer-managed KMS key that encrypts the replica."
+  value       = aws_kms_key.replica.arn
+}
